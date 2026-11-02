@@ -1,0 +1,8 @@
+{
+  "name": "host-now-api",
+  "private": true,
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": { "start": "node server.mjs" },
+  "dependencies": { "pg": "^8.11.5" }
+}
