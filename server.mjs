@@ -260,6 +260,16 @@ const sweep = () => {
   store.sites = store.sites.filter((s) => !expired(s));
   for (const site of dead) {
     try { rmSync(join(SITES_DIR(), site.name), { recursive: true, force: true }); } catch { /* gone */ }
+    // The published files live on the static origin, so removing the local copy is not enough:
+    // without this the site keeps serving after it has expired.
+    const origin = process.env.HOSTERD_STATIC_ORIGIN, originToken = process.env.HOSTERD_STATIC_TOKEN;
+    if (origin && originToken && site.kind === 'static') {
+      fetch(origin.replace(/\/$/, '') + '/_delete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-static-token': originToken },
+        body: JSON.stringify({ site: site.name }),
+      }).catch((err) => console.error('expire purge failed:', site.name, err.message));
+    }
     audit(site.tenant, 'site.expire', site.name, 'ok', { expiresAt: site.expiresAt });
   }
   persist();
@@ -476,6 +486,13 @@ const server = createServer(async (req, res) => {
     if (i < 0) return fail(res, 404, 'no_site', 'unknown site', 'host-now status');
     const [gone] = store.sites.splice(i, 1);
     try { rmSync(join(SITES_DIR(), gone.name), { recursive: true, force: true }); } catch { /* already gone */ }
+    const o = process.env.HOSTERD_STATIC_ORIGIN, ot = process.env.HOSTERD_STATIC_TOKEN;
+    if (o && ot && gone.kind === 'static') {
+      fetch(o.replace(/\/$/, '') + '/_delete', {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-static-token': ot },
+        body: JSON.stringify({ site: gone.name }),
+      }).catch(() => {});
+    }
     persist();
     audit(key.id, 'site.delete', gone.name, 'ok', { kind: gone.kind });
     return json(res, 200, { deleted: gone.name, kind: gone.kind });
