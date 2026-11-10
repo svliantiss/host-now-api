@@ -9,7 +9,7 @@
 //   * a request with no live credentials produces a plan, not a mutation
 import { createServer } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import pg from 'pg';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -441,6 +441,18 @@ const server = createServer(async (req, res) => {
     const site = store.sites.find((s) => s.name === one[1] && (can(key, 'keys:admin') || s.tenant === key.tenant));
     if (!site) return fail(res, 404, 'no_site', 'unknown site', 'host-now status');
     return json(res, 200, site);
+  }
+
+  if (method === 'DELETE' && one) {
+    if (!can(key, 'sites:write') && !can(key, 'keys:admin'))
+      return fail(res, 403, 'scope', 'this key cannot delete sites');
+    const i = store.sites.findIndex((s) => s.name === one[1] && (can(key, 'keys:admin') || s.tenant === key.tenant));
+    if (i < 0) return fail(res, 404, 'no_site', 'unknown site', 'host-now status');
+    const [gone] = store.sites.splice(i, 1);
+    try { rmSync(join(SITES_DIR(), gone.name), { recursive: true, force: true }); } catch { /* already gone */ }
+    persist();
+    audit(key.id, 'site.delete', gone.name, 'ok', { kind: gone.kind });
+    return json(res, 200, { deleted: gone.name, kind: gone.kind });
   }
 
   const files = path.match(/^\/sites\/([a-z0-9-]+)\/files$/);
