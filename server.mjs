@@ -293,9 +293,7 @@ const server = createServer(async (req, res) => {
   const isAdmin = ADMIN && req.headers['x-hosterd-admin'] === ADMIN;
   if (method === 'POST' && path === '/keys') {
     if (!isAdmin) return fail(res, 401, 'admin_required', 'admin key required', 'set HOSTERD_ADMIN_KEY and send x-hosterd-admin');
-    mark('before read');
     const body = await read(req);
-    mark('after read');
     if (!body.scopes?.length) return fail(res, 400, 'bad_request', 'scopes are required', 'e.g. ["sites:read","sites:write"]');
     const bad = body.scopes.filter((s) => !SCOPES.has(s));
     if (bad.length) return fail(res, 400, 'bad_request', `unknown scope: ${bad.join(", ")}`, `known: ${[...SCOPES].join(", ")}`);
@@ -342,9 +340,6 @@ const server = createServer(async (req, res) => {
   }
 
   if (method === 'POST' && path === '/sites') {
-    const T0 = Date.now();
-    const mark = (what) => console.log(`[sites] ${what} +${Date.now() - T0}ms`);
-    mark('enter');
     const staticOnly = !can(key, 'sites:write') && key.scopes.includes('static:write');
     const wantsStatic = staticOnly || body.kind === 'static';
     if (!can(key, 'sites:write') && !staticOnly) return fail(res, 403, 'scope', 'this key cannot create sites', 'ask for sites:write');
@@ -373,10 +368,7 @@ const server = createServer(async (req, res) => {
       db: wantsStatic ? false : Boolean(body.db ?? false),
       url: `https://${name}.host.abslm.nl`, state: 'planned', createdAt: now(),
     };
-    mark('before plan');
     const plan = planFor(site);
-    mark('after plan');
-    mark('live=' + LIVE);
     if (!LIVE) {
       store.sites.push(site);
       audit(key.id, 'site.plan', name, 'ok', { steps: plan.steps.length });
