@@ -341,9 +341,9 @@ const server = createServer(async (req, res) => {
 
   if (method === 'POST' && path === '/sites') {
     const staticOnly = !can(key, 'sites:write') && key.scopes.includes('static:write');
-    const wantsStatic = staticOnly || body.kind === 'static';
     if (!can(key, 'sites:write') && !staticOnly) return fail(res, 403, 'scope', 'this key cannot create sites', 'ask for sites:write');
     const body = await read(req);
+    const wantsStatic = staticOnly || body.kind === 'static';
     const name = body.name ?? generated();
     if (!NAME.test(name)) return fail(res, 400, 'bad_request', 'name must be 3-30 chars of a-z, 0-9 and hyphens');
     if (body.repo && !REPO.test(body.repo)) return fail(res, 400, 'bad_request', 'repo must look like owner/name');
