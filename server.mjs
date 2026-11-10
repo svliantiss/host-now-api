@@ -243,6 +243,29 @@ async function ensureDomain(name) {
 }
 
 // ---- routes --------------------------------------------------------------
+const ttlMs = (body) => {
+  const m = Number(body.ttlMinutes ?? 0);
+  const d = Number(body.ttlDays ?? 0);
+  const ms = (Number.isFinite(m) ? m * 60_000 : 0) + (Number.isFinite(d) ? d * 86_400_000 : 0);
+  return ms > 0 ? ms : 0;
+};
+
+const expired = (site) => Boolean(site.expiresAt) && Date.parse(site.expiresAt) <= Date.now();
+
+// Sweeps expired sites so a short-lived test cannot outlive its welcome. Runs every minute and
+// is safe to have nothing to do.
+const sweep = () => {
+  const dead = store.sites.filter(expired);
+  if (!dead.length) return;
+  store.sites = store.sites.filter((s) => !expired(s));
+  for (const site of dead) {
+    try { rmSync(join(SITES_DIR(), site.name), { recursive: true, force: true }); } catch { /* gone */ }
+    audit(site.tenant, 'site.expire', site.name, 'ok', { expiresAt: site.expiresAt });
+  }
+  persist();
+};
+setInterval(sweep, 60_000).unref?.();
+
 const server = createServer(async (req, res) => {
   // A thrown error inside the handler used to leave the client waiting forever, because nothing
   // responded and the exception only reached process.on('uncaughtException'). No route may hang.
@@ -378,6 +401,9 @@ const server = createServer(async (req, res) => {
       // every site, including ones that only ever serve files.
       db: wantsStatic ? false : Boolean(body.db ?? false),
       url: `https://${name}.host.abslm.nl`, state: 'planned', createdAt: now(),
+      // Optional life. Without it a published site lives until someone deletes it, which is how
+      // the store filled with test sites.
+      expiresAt: ttlMs(body) ? new Date(Date.now() + ttlMs(body)).toISOString() : null,
     };
     const plan = planFor(site);
     if (!LIVE) {
@@ -470,6 +496,7 @@ const server = createServer(async (req, res) => {
       store.sites.push(site);
     }
     if (!site) return fail(res, 404, 'no_site', 'unknown site', 'create it first with POST /sites');
+    if (expired(site)) return fail(res, 410, 'expired', 'this site has expired', 'publish it again to renew');
     if (site.kind !== 'static') return fail(res, 400, 'not_static', 'this site is not a static site');
     const body = await read(req);
     if (!Array.isArray(body.files) || !body.files.length) return fail(res, 400, 'bad_request', 'send {files:[{path,data}]}');
