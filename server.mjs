@@ -244,6 +244,17 @@ async function ensureDomain(name) {
 
 // ---- routes --------------------------------------------------------------
 const server = createServer(async (req, res) => {
+  // A thrown error inside the handler used to leave the client waiting forever, because nothing
+  // responded and the exception only reached process.on('uncaughtException'). No route may hang.
+  const guard = setTimeout(() => {
+    if (res.headersSent) return;
+    try {
+      res.writeHead(504, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ code: 'handler_timeout', message: 'the handler did not respond in 30s' }));
+    } catch { /* socket already gone */ }
+  }, 30_000);
+  res.on('close', () => clearTimeout(guard));
+
   const url = new URL(req.url ?? '/', 'http://hosterd');
   const path = url.pathname;
   const method = req.method ?? 'GET';
