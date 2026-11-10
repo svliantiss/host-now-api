@@ -28,7 +28,16 @@ const anonHits = new Map(); // ip -> [timestamps]
 // ---- store ---------------------------------------------------------------
 function blank() { return { version: 1, tenants: [], keys: [], sites: [], audit: [] }; }
 if (!process.env.DATABASE_URL) { console.error('FATAL: DATABASE_URL is required'); process.exit(1); }
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 10,
+  // Without these, one hung query holds a client and every later request queues behind
+  // it until the pool is empty, which shows up as 15-30s stalls on unrelated routes.
+  connectionTimeoutMillis: 3_000,
+  idleTimeoutMillis: 10_000,
+  keepAlive: true,
+  statement_timeout: 5_000,
+});
 await pool.query('CREATE TABLE IF NOT EXISTS host_now_state (id int primary key, doc jsonb not null)');
 await pool.query("CREATE TABLE IF NOT EXISTS host_now_audit (at timestamptz not null default now(), row jsonb not null)");
 
