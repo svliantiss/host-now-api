@@ -332,6 +332,7 @@ const server = createServer(async (req, res) => {
 
   if (method === 'POST' && path === '/sites') {
     const staticOnly = !can(key, 'sites:write') && key.scopes.includes('static:write');
+    const wantsStatic = staticOnly || body.kind === 'static';
     if (!can(key, 'sites:write') && !staticOnly) return fail(res, 403, 'scope', 'this key cannot create sites', 'ask for sites:write');
     const body = await read(req);
     const name = body.name ?? generated();
@@ -339,7 +340,9 @@ const server = createServer(async (req, res) => {
     if (body.repo && !REPO.test(body.repo)) return fail(res, 400, 'bad_request', 'repo must look like owner/name');
     if (body.db && key.kind !== 'registered')
       return fail(res, 403, 'db_needs_identity', 'a database needs a registered key, not an anonymous one', 'connect a GitHub identity to get databases');
-    if (staticOnly && (body.repo || body.db || body.build))
+    if (body.kind !== undefined && body.kind !== 'static' && body.kind !== 'server')
+      return fail(res, 400, 'bad_request', "kind must be 'static' or 'server'");
+    if (wantsStatic && (body.repo || body.db || body.build))
       return fail(res, 403, 'static_only', 'an anonymous key cannot build, run a server, or create a database', 'connect a GitHub identity for that');
     if (store.sites.some((s) => s.name === name)) return fail(res, 409, 'name_taken', `site ${name} already exists`);
     const owned = store.sites.filter((s) => s.tenant === key.tenant);
@@ -348,9 +351,12 @@ const server = createServer(async (req, res) => {
       return fail(res, 429, 'quota', staticOnly ? 'one anonymous site per key' : 'three sites per tenant at this stage', 'host-now down <name> first');
 
     const site = {
-      name, tenant: key.tenant, kind: staticOnly ? 'static' : 'server',
-      repo: staticOnly ? null : (body.repo ?? null), branch: body.branch ?? 'main',
-      port: staticOnly ? null : Number(body.port ?? 3000), db: staticOnly ? false : Boolean(body.db ?? true),
+      name, tenant: key.tenant, kind: wantsStatic ? 'static' : 'server',
+      repo: wantsStatic ? null : (body.repo ?? null), branch: body.branch ?? 'main',
+      port: wantsStatic ? null : Number(body.port ?? 3000),
+      // A database must be asked for. Defaulting to true provisioned Postgres for
+      // every site, including ones that only ever serve files.
+      db: wantsStatic ? false : Boolean(body.db ?? false),
       url: `https://${name}.host.abslm.nl`, state: 'planned', createdAt: now(),
     };
     const plan = planFor(site);
