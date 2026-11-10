@@ -39,6 +39,9 @@ const pool = new pg.Pool({
   statement_timeout: 5_000,
 });
 await pool.query('CREATE TABLE IF NOT EXISTS host_now_state (id int primary key, doc jsonb not null)');
+await pool.query(`CREATE TABLE IF NOT EXISTS host_now_files (
+  site text not null, path text not null, data bytea not null,
+  updated_at timestamptz not null default now(), primary key (site, path))`);
 await pool.query("CREATE TABLE IF NOT EXISTS host_now_audit (at timestamptz not null default now(), row jsonb not null)");
 
 let store = blank();
@@ -55,6 +58,24 @@ const persist = () => {
     .then(() => pool.query('INSERT INTO host_now_state (id, doc) VALUES (1, $1::jsonb) ON CONFLICT (id) DO UPDATE SET doc = $1::jsonb', [snapshot]))
     .catch((err) => console.error('persist failed:', err.message));
   return chain;
+};
+
+// Published bytes live in Postgres so a redeploy of the static app cannot delete them.
+const saveFilesDb = async (site, files) => {
+  for (const f of files ?? []) {
+    const rel = String(f.path ?? '');
+    if (!rel || rel.includes('..') || rel.startsWith('/')) continue;
+    await pool.query(
+      'INSERT INTO host_now_files (site, path, data) VALUES ($1, $2, $3) ON CONFLICT (site, path) DO UPDATE SET data = EXCLUDED.data, updated_at = now()',
+      [site, rel, Buffer.from(f.data ?? '', 'base64')],
+    ).catch((e) => console.error('files db write failed:', rel, e.message));
+  }
+};
+const dropFilesDb = (site) =>
+  pool.query('DELETE FROM host_now_files WHERE site = $1', [site]).catch(() => {});
+const readFileDb = async (site, rel) => {
+  const { rows } = await pool.query('SELECT data FROM host_now_files WHERE site = $1 AND path = $2', [site, rel]).catch(() => ({ rows: [] }));
+  return rows[0]?.data ?? null;
 };
 
 const hash = (secret) => createHash('sha256').update(secret).digest('hex');
@@ -260,6 +281,7 @@ const sweep = () => {
   store.sites = store.sites.filter((s) => !expired(s));
   for (const site of dead) {
     try { rmSync(join(SITES_DIR(), site.name), { recursive: true, force: true }); } catch { /* gone */ }
+    dropFilesDb(site.name);
     // The published files live on the static origin, so removing the local copy is not enough:
     // without this the site keeps serving after it has expired.
     const origin = process.env.HOSTERD_STATIC_ORIGIN, originToken = process.env.HOSTERD_STATIC_TOKEN;
@@ -314,8 +336,12 @@ const server = createServer(async (req, res) => {
     const rel = rest.join('/') || 'index.html';
     if (checkPath(rel)) return fail(res, 404, 'no_file', 'unknown file');
     const file = join(SITES_DIR(), name, ...rel.split('/'));
-    if (!existsSync(file)) return fail(res, 404, 'no_file', 'not found', 'publish a folder first');
-    const body = readFileSync(file);
+    let body;
+    if (existsSync(file)) body = readFileSync(file);
+    else {
+      body = await readFileDb(name, rel);
+      if (!body) return fail(res, 404, 'no_file', 'not found', 'publish a folder first');
+    }
     res.writeHead(200, { 'content-type': MIME[extOf(rel)] ?? 'application/octet-stream', 'content-length': body.length, 'x-content-type-options': 'nosniff' });
     return res.end(body);
   }
@@ -486,6 +512,7 @@ const server = createServer(async (req, res) => {
     if (i < 0) return fail(res, 404, 'no_site', 'unknown site', 'host-now status');
     const [gone] = store.sites.splice(i, 1);
     try { rmSync(join(SITES_DIR(), gone.name), { recursive: true, force: true }); } catch { /* already gone */ }
+    await dropFilesDb(gone.name);
     const o = process.env.HOSTERD_STATIC_ORIGIN, ot = process.env.HOSTERD_STATIC_TOKEN;
     if (o && ot && gone.kind === 'static') {
       fetch(o.replace(/\/$/, '') + '/_delete', {
@@ -524,6 +551,7 @@ const server = createServer(async (req, res) => {
     const originToken = process.env.HOSTERD_STATIC_TOKEN;
     let publicServing = false;
     let publicError = null;
+    await saveFilesDb(site.name, body.files);
     if (origin && originToken) {
       try {
         const r = await fetch(origin.replace(/\/$/, '') + '/_upload', {
